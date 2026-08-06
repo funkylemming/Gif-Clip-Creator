@@ -4,8 +4,27 @@ import cv2
 import numpy as np
 import streamlit as st
 import yt_dlp
+import base64
+import streamlit.components.v1 as components
 
+# Title
 st.title("Universal Motion-Centered Video/GIF Maker")
+
+# Description / Instructions
+st.markdown("""
+Extract clips from video URLs, automatically crop them using motion tracking, and generate optimized MP4s or GIFs under 10MB.
+
+**How to use:**
+1. Paste the direct video URL below.
+2. Set your start time and clip duration.
+3. Choose your preferred framing orientation and output format.
+4. Click **Generate Clip** to build and download your file.
+""")
+
+# Website compatibility notice
+st.warning("Note: Due to variable site structures and streaming protections, this tool may not work with every website. If a link fails, try a video from a different site or source.")
+
+st.divider()
 
 # User Inputs (empty defaults for URL and Save File As)
 video_url = st.text_input("Video URL", "")
@@ -156,13 +175,58 @@ if st.button("Generate Clip"):
 
             if os.path.exists(out) and os.path.getsize(out) > 0:
                 st.success("File generated successfully!")
+                
                 with open(out, "rb") as file:
-                    st.download_button(
-                        label=f"Download {output_format.upper()}",
-                        data=file,
-                        file_name=out,
-                        mime="video/mp4" if output_format == "mp4" else "image/gif"
-                    )
+                    file_bytes = file.read()
+
+                # Standard Download Button
+                st.download_button(
+                    label=f"Download {output_format.upper()}",
+                    data=file_bytes,
+                    file_name=out,
+                    mime="video/mp4" if output_format == "mp4" else "image/gif"
+                )
+
+                # Clipboard Copy Option for GIFs
+                if output_format == "gif":
+                    b64_gif = base64.b64encode(file_bytes).decode("utf-8")
+                    copy_html = f"""
+                    <button id="copyBtn" style="
+                        background-color: #ff4b4b;
+                        color: white;
+                        border: none;
+                        padding: 0.5rem 1rem;
+                        border-radius: 0.5rem;
+                        cursor: pointer;
+                        font-size: 14px;
+                        font-weight: 500;
+                        margin-top: 5px;">
+                        📋 Copy GIF to Clipboard
+                    </button>
+                    <span id="status" style="margin-left: 10px; font-family: sans-serif; font-size: 14px; color: #333;"></span>
+
+                    <script>
+                    document.getElementById('copyBtn').addEventListener('click', async () => {{
+                        const status = document.getElementById('status');
+                        status.innerText = 'Copying...';
+                        try {{
+                            const b64Data = '{b64_gif}';
+                            const res = await fetch(`data:image/gif;base64,${{b64Data}}`);
+                            const blob = await res.blob();
+                            
+                            await navigator.clipboard.write([
+                                new ClipboardItem({{ [blob.type]: blob }})
+                            ]);
+                            status.innerText = '✅ Copied!';
+                        }} catch (err) {{
+                            status.innerText = '❌ Failed (Browser blocked clipboard access)';
+                            console.error(err);
+                        }}
+                    }});
+                    </script>
+                    """
+                    components.html(copy_html, height=50)
+
                 os.remove(out)
             else:
                 st.error("Processing failed. Please verify the URL or timestamps.")
