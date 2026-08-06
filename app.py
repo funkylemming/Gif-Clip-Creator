@@ -107,46 +107,30 @@ if st.button("Generate Clip"):
                 if output_format == "mp4":
                     os.rename(tmp, out)
                 else:
-                    widths = [400, 360, 320, 280, 240] if orientation == "vertical" else ([540, 480, 420, 360, 300] if orientation == "square" else [640, 560, 480, 400, 320])
-                    quality_tiers = [
-                        {"fps": 18, "w_idx": 0, "colors": 256, "dither": "bayer:bayer_scale=3", "label": "Ultra (18 FPS)"},
-                        {"fps": 16, "w_idx": 1, "colors": 256, "dither": "bayer:bayer_scale=3", "label": "High (16 FPS)"},
-                        {"fps": 15, "w_idx": 2, "colors": 224, "dither": "bayer:bayer_scale=4", "label": "Balanced (15 FPS)"},
-                        {"fps": 12, "w_idx": 3, "colors": 192, "dither": "bayer:bayer_scale=4", "label": "Compact (12 FPS)"},
-                        {"fps": 10, "w_idx": 4, "colors": 160, "dither": "bayer:bayer_scale=5", "label": "Low (10 FPS)"}
+                    # Determine target width and FPS based on duration to guarantee small file size in ONE pass
+                    try:
+                        dur = float(clip_duration)
+                    except ValueError:
+                        dur = 16.0
+
+                    # Adjust target dimensions and framerate dynamically to guarantee < 10MB in a single conversion pass
+                    if dur > 12:
+                        target_fps = 12
+                        target_width = 360 if orientation == "vertical" else (420 if orientation == "square" else 480)
+                    elif dur > 6:
+                        target_fps = 14
+                        target_width = 400 if orientation == "vertical" else (480 if orientation == "square" else 540)
+                    else:
+                        target_fps = 15
+                        target_width = 480 if orientation == "vertical" else (540 if orientation == "square" else 640)
+
+                    # Single fast pass using standard palettegen/use chained directly
+                    fast_gif_cmd = [
+                        'ffmpeg', '-y', '-i', tmp,
+                        '-vf', f"fps={target_fps},scale={target_width}:-1:flags=bilinear,split[s0][s1];[s0]palettegen=max_colors=192[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3",
+                        out
                     ]
-
-                    target_bytes = 10 * 1024 * 1024
-                    sweet_spot_bytes = 8 * 1024 * 1024
-                    low, high = 0, len(quality_tiers) - 1
-                    best_valid_file = None
-
-                    while low <= high:
-                        mid = (low + high) // 2
-                        tier = quality_tiers[mid]
-                        gif_w = widths[tier["w_idx"]]
-                        test_out = f"test_{mid}.gif"
-
-                        # Single-pass filter combining palette generation and palette use directly in memory
-                        fc = f"[0:v] fps={tier['fps']},scale={gif_w}:-1:flags=bilinear,split [a][b]; [a] palettegen=max_colors={tier['colors']}:stats_mode=diff [p]; [b][p] paletteuse=dither={tier['dither']}:diff_mode=rectangle"
-
-                        subprocess.run(['ffmpeg', '-y', '-i', tmp, '-filter_complex', fc, test_out], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-                        if os.path.exists(test_out):
-                            size = os.path.getsize(test_out)
-                            if size <= target_bytes:
-                                if best_valid_file and os.path.exists(best_valid_file):
-                                    os.remove(best_valid_file)
-                                best_valid_file = test_out
-                                if size >= sweet_spot_bytes: break
-                                else: high = mid - 1
-                            else:
-                                os.remove(test_out)
-                                low = mid + 1
-
-                    if best_valid_file and os.path.exists(best_valid_file):
-                        if os.path.exists(out): os.remove(out)
-                        os.rename(best_valid_file, out)
+                    subprocess.run(fast_gif_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
                     if os.path.exists(tmp): os.remove(tmp)
 
