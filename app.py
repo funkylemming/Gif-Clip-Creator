@@ -61,14 +61,14 @@ if st.button("Generate Clip"):
     elif not save_file_as.strip():
         st.error("Please enter a name in 'Save File As'.")
     else:
-        with st.spinner("Processing clip... please wait."):
+        with st.spinner("Processing clip... please wait (GIFs take ~15-30s on cloud servers)."):
             name = save_file_as.strip().replace('.mp4','').replace('.gif','')
             out = f"{name}.{output_format}"
             tmp = "temp.mp4"
 
             stream_url = get_direct_stream_url(video_url)
             headers = f"User-Agent: {user_agent}\r\nReferer: {video_url}\r\n"
-            cmd1 = ['ffmpeg', '-y', '-headers', headers, '-ss', start_time, '-i', stream_url, '-t', clip_duration, '-c:v', 'libx264', '-crf', '22', '-preset', 'veryfast', '-c:a', 'aac', '-b:a', '128k', '-vsync', 'vfr', tmp]
+            cmd1 = ['ffmpeg', '-y', '-headers', headers, '-ss', start_time, '-i', stream_url, '-t', clip_duration, '-c:v', 'libx264', '-crf', '22', '-preset', 'ultrafast', '-c:a', 'aac', '-b:a', '128k', '-vsync', 'vfr', tmp]
             
             r = subprocess.run(cmd1, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
@@ -91,7 +91,7 @@ if st.button("Generate Clip"):
                             ret, frame = cap.read()
                             if not ret: break
                             frame_count += 1
-                            if frame_count % 3 != 0: continue
+                            if frame_count % 4 != 0: continue
 
                             gray = cv2.cvtColor(cv2.resize(frame, (tw, th)), cv2.COLOR_BGR2GRAY)
                             delta = cv2.absdiff(prev_gray, gray)
@@ -127,45 +127,35 @@ if st.button("Generate Clip"):
                     os.rename(tmp, out)
                 else:
                     widths = [400, 360, 320, 280, 240] if orientation == "vertical" else ([540, 480, 420, 360, 300] if orientation == "square" else [640, 560, 480, 400, 320])
+                    
                     quality_tiers = [
-                        {"fps": 18, "w_idx": 0, "colors": 256, "dither": "bayer:bayer_scale=3", "label": "Ultra (18 FPS)"},
-                        {"fps": 16, "w_idx": 1, "colors": 256, "dither": "bayer:bayer_scale=3", "label": "High (16 FPS)"},
-                        {"fps": 15, "w_idx": 2, "colors": 224, "dither": "bayer:bayer_scale=4", "label": "Balanced (15 FPS)"},
-                        {"fps": 12, "w_idx": 3, "colors": 192, "dither": "bayer:bayer_scale=4", "label": "Compact (12 FPS)"},
-                        {"fps": 10, "w_idx": 4, "colors": 160, "dither": "bayer:bayer_scale=5", "label": "Low (10 FPS)"}
+                        {"fps": 15, "w_idx": 0, "colors": 256, "dither": "bayer:bayer_scale=3"},
+                        {"fps": 14, "w_idx": 1, "colors": 224, "dither": "bayer:bayer_scale=3"},
+                        {"fps": 12, "w_idx": 2, "colors": 192, "dither": "bayer:bayer_scale=4"},
+                        {"fps": 10, "w_idx": 3, "colors": 160, "dither": "bayer:bayer_scale=4"},
+                        {"fps": 8,  "w_idx": 4, "colors": 128, "dither": "bayer:bayer_scale=5"}
                     ]
 
                     target_bytes = 10 * 1024 * 1024
-                    sweet_spot_bytes = 8 * 1024 * 1024
-                    low, high = 0, len(quality_tiers) - 1
                     best_valid_file = None
 
-                    while low <= high:
-                        mid = (low + high) // 2
-                        tier = quality_tiers[mid]
+                    # Fast single-pass in-memory filter graph per tier
+                    for idx, tier in enumerate(quality_tiers):
                         gif_w = widths[tier["w_idx"]]
-                        test_out = f"test_{mid}.gif"
+                        test_out = f"test_{idx}.gif"
 
-                        scale_filter = f"fps={tier['fps']},scale={gif_w}:-1:flags=lanczos"
-                        palette_filter = f"{scale_filter},palettegen=max_colors={tier['colors']}:stats_mode=diff"
-                        render_filter = f"{scale_filter}[x];[x][1:v]paletteuse=dither={tier['dither']}:diff_mode=rectangle"
+                        # Single-pass filter_complex combining palettegen and paletteuse in RAM
+                        fc = f"[0:v] fps={tier['fps']},scale={gif_w}:-1:flags=bilinear,split [a][b]; [a] palettegen=max_colors={tier['colors']}:stats_mode=diff [p]; [b][p] paletteuse=dither={tier['dither']}:diff_mode=rectangle"
 
-                        subprocess.run(['ffmpeg', '-y', '-i', tmp, '-vf', palette_filter, 'p.png'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                        subprocess.run(['ffmpeg', '-y', '-i', tmp, '-i', 'p.png', '-filter_complex', render_filter, test_out], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-                        if os.path.exists('p.png'): os.remove('p.png')
+                        subprocess.run(['ffmpeg', '-y', '-i', tmp, '-filter_complex', fc, test_out], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
                         if os.path.exists(test_out):
                             size = os.path.getsize(test_out)
                             if size <= target_bytes:
-                                if best_valid_file and os.path.exists(best_valid_file):
-                                    os.remove(best_valid_file)
                                 best_valid_file = test_out
-                                if size >= sweet_spot_bytes: break
-                                else: high = mid - 1
+                                break  # Stop at first tier under 10MB
                             else:
                                 os.remove(test_out)
-                                low = mid + 1
 
                     if best_valid_file and os.path.exists(best_valid_file):
                         if os.path.exists(out): os.remove(out)
@@ -179,7 +169,7 @@ if st.button("Generate Clip"):
                 with open(out, "rb") as file:
                     file_bytes = file.read()
 
-                # Standard Download Button
+                # Download Button
                 st.download_button(
                     label=f"Download {output_format.upper()}",
                     data=file_bytes,
