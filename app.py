@@ -72,7 +72,7 @@ if st.button("Generate Clip"):
                             ret, frame = cap.read()
                             if not ret: break
                             frame_count += 1
-                            if frame_count % 3 != 0: continue
+                            if frame_count % 4 != 0: continue
 
                             gray = cv2.cvtColor(cv2.resize(frame, (tw, th)), cv2.COLOR_BGR2GRAY)
                             delta = cv2.absdiff(prev_gray, gray)
@@ -127,14 +127,10 @@ if st.button("Generate Clip"):
                         gif_w = widths[tier["w_idx"]]
                         test_out = f"test_{mid}.gif"
 
-                        scale_filter = f"fps={tier['fps']},scale={gif_w}:-1:flags=lanczos"
-                        palette_filter = f"{scale_filter},palettegen=max_colors={tier['colors']}:stats_mode=diff"
-                        render_filter = f"{scale_filter}[x];[x][1:v]paletteuse=dither={tier['dither']}:diff_mode=rectangle"
+                        # Single-pass filter combining palette generation and palette use directly in memory
+                        fc = f"[0:v] fps={tier['fps']},scale={gif_w}:-1:flags=bilinear,split [a][b]; [a] palettegen=max_colors={tier['colors']}:stats_mode=diff [p]; [b][p] paletteuse=dither={tier['dither']}:diff_mode=rectangle"
 
-                        subprocess.run(['ffmpeg', '-y', '-i', tmp, '-vf', palette_filter, 'p.png'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                        subprocess.run(['ffmpeg', '-y', '-i', tmp, '-i', 'p.png', '-filter_complex', render_filter, test_out], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-                        if os.path.exists('p.png'): os.remove('p.png')
+                        subprocess.run(['ffmpeg', '-y', '-i', tmp, '-filter_complex', fc, test_out], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
                         if os.path.exists(test_out):
                             size = os.path.getsize(test_out)
