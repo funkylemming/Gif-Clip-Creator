@@ -1,4 +1,5 @@
 import os
+import gc
 import subprocess
 import cv2
 import numpy as np
@@ -8,7 +9,7 @@ import yt_dlp
 st.title("Universal Motion-Centered Video/GIF Maker")
 st.markdown("Extract motion-centered clips or animated GIFs from online videos with automatic frame cropping.")
 
-# User Inputs (empty defaults for URL and Save File As)
+# User Inputs
 video_url = st.text_input("Video URL", "")
 clip_description = st.text_area("Description (Optional)", "", placeholder="Add notes or a caption for this clip...")
 start_time = st.text_input("Start Time (HH:MM:SS)", "00:02:34")
@@ -21,7 +22,7 @@ user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 
 def get_direct_stream_url(source_url):
     ydl_opts = {
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4][height<=720]/best',
         'quiet': True,
         'no_warnings': True,
         'user_agent': user_agent,
@@ -49,19 +50,33 @@ if st.button("Generate Clip"):
             out = f"{name}.{output_format}"
             tmp = "temp.mp4"
 
+            # Clean pre-existing files
+            for f in [tmp, out, "temp_cropped.mp4"]:
+                if os.path.exists(f):
+                    try: os.remove(f)
+                    except Exception: pass
+
             stream_url = get_direct_stream_url(video_url)
             headers = f"User-Agent: {user_agent}\r\nReferer: {video_url}\r\n"
-            cmd1 = ['ffmpeg', '-y', '-headers', headers, '-ss', start_time, '-i', stream_url, '-t', clip_duration, '-c:v', 'libx264', '-crf', '22', '-preset', 'veryfast', '-c:a', 'aac', '-b:a', '128k', '-vsync', 'vfr', tmp]
             
-            r = subprocess.run(cmd1, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            # Speed & Memory Optimized FFmpeg Command (stdout/stderr piped to DEVNULL)
+            cmd1 = [
+                'ffmpeg', '-y', '-headers', headers, 
+                '-ss', start_time, '-i', stream_url, 
+                '-t', clip_duration, '-c:v', 'libx264', 
+                '-crf', '26', '-preset', 'ultrafast', 
+                '-c:a', 'aac', '-b:a', '96k', '-vsync', 'vfr', tmp
+            ]
+            
+            r = subprocess.run(cmd1, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
             if r.returncode == 0 and os.path.exists(tmp) and os.path.getsize(tmp) > 0:
                 cap = cv2.VideoCapture(tmp)
                 orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                 orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-                if orientation != "horizontal":
-                    scale = 360.0 / orig_h if orig_h > 360 else 1.0
+                if orientation != "horizontal" and orig_h > 0:
+                    scale = 240.0 / orig_h if orig_h > 240 else 1.0
                     tw, th = int(orig_w * scale), int(orig_h * scale)
 
                     ret, prev_frame = cap.read()
@@ -74,7 +89,7 @@ if st.button("Generate Clip"):
                             ret, frame = cap.read()
                             if not ret: break
                             frame_count += 1
-                            if frame_count % 4 != 0: continue
+                            if frame_count % 5 != 0: continue
 
                             gray = cv2.cvtColor(cv2.resize(frame, (tw, th)), cv2.COLOR_BGR2GRAY)
                             delta = cv2.absdiff(prev_gray, gray)
@@ -100,11 +115,17 @@ if st.button("Generate Clip"):
                         if target_w % 2 != 0: target_w -= 1
 
                         crop_tmp = "temp_cropped.mp4"
-                        subprocess.run(['ffmpeg', '-y', '-i', tmp, '-vf', f"crop={target_w}:{orig_h}:{left_bound}:0", '-c:a', 'copy', crop_tmp], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        subprocess.run(
+                            ['ffmpeg', '-y', '-i', tmp, '-vf', f"crop={target_w}:{orig_h}:{left_bound}:0", '-c:a', 'copy', crop_tmp], 
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                        )
                         os.remove(tmp)
                         os.rename(crop_tmp, tmp)
                 else:
                     cap.release()
+
+                # Force memory cleanup after video analysis
+                gc.collect()
 
                 if output_format == "mp4":
                     os.rename(tmp, out)
@@ -115,47 +136,47 @@ if st.button("Generate Clip"):
                         dur = 16.0
 
                     if dur > 12:
-                        target_fps = 12
-                        target_width = 360 if orientation == "vertical" else (420 if orientation == "square" else 480)
+                        target_fps = 10
+                        target_width = 320 if orientation == "vertical" else 360
                     elif dur > 6:
-                        target_fps = 14
-                        target_width = 400 if orientation == "vertical" else (480 if orientation == "square" else 540)
+                        target_fps = 12
+                        target_width = 360 if orientation == "vertical" else 400
                     else:
-                        target_fps = 15
-                        target_width = 480 if orientation == "vertical" else (540 if orientation == "square" else 640)
+                        target_fps = 14
+                        target_width = 400 if orientation == "vertical" else 480
 
                     fast_gif_cmd = [
                         'ffmpeg', '-y', '-i', tmp,
-                        '-vf', f"fps={target_fps},scale={target_width}:-1:flags=bilinear,split[s0][s1];[s0]palettegen=max_colors=192[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3",
+                        '-vf', f"fps={target_fps},scale={target_width}:-1:flags=bilinear,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3",
                         out
                     ]
-                    subprocess.run(fast_gif_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    subprocess.run(fast_gif_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-                    if os.path.exists(tmp): os.remove(tmp)
+                    if os.path.exists(tmp): 
+                        os.remove(tmp)
+
+            gc.collect()
 
             if os.path.exists(out) and os.path.getsize(out) > 0:
-                with open(out, "rb") as file:
-                    out_bytes = file.read()
-                
-                os.remove(out)
-
                 st.success("File generated successfully!")
                 
-                # Preview Section with Description
                 st.subheader("Preview")
                 if clip_description.strip():
                     st.caption(clip_description.strip())
 
+                # Display preview safely using disk path (prevents RAM overload)
                 if output_format == "mp4":
-                    st.video(out_bytes)
+                    st.video(out)
                 else:
-                    st.image(out_bytes)
+                    st.image(out)
 
-                st.download_button(
-                    label=f"Download {output_format.upper()}",
-                    data=out_bytes,
-                    file_name=out,
-                    mime="video/mp4" if output_format == "mp4" else "image/gif"
-                )
+                # Stream file directly into download button
+                with open(out, "rb") as file:
+                    st.download_button(
+                        label=f"Download {output_format.upper()}",
+                        data=file,
+                        file_name=out,
+                        mime="video/mp4" if output_format == "mp4" else "image/gif"
+                    )
             else:
-                st.error("Processing failed. Please verify the URL or timestamps.")
+                st.error("Processing failed. Streamlit Cloud may have timed out or the video URL was restricted.")
