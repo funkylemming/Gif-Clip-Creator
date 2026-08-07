@@ -6,9 +6,11 @@ import streamlit as st
 import yt_dlp
 
 st.title("Universal Motion-Centered Video/GIF Maker")
+st.markdown("Extract motion-centered clips or animated GIFs from online videos with automatic frame cropping.")
 
 # User Inputs (empty defaults for URL and Save File As)
 video_url = st.text_input("Video URL", "")
+clip_description = st.text_area("Description (Optional)", "", placeholder="Add notes or a caption for this clip...")
 start_time = st.text_input("Start Time (HH:MM:SS)", "00:02:34")
 clip_duration = st.text_input("Clip Duration (seconds)", "16")
 save_file_as = st.text_input("Save File As", "")
@@ -139,8 +141,11 @@ if st.button("Generate Clip"):
 
                 st.success("File generated successfully!")
                 
-                # Preview Player
+                # Preview Section with Description
                 st.subheader("Preview")
+                if clip_description.strip():
+                    st.caption(clip_description.strip())
+
                 if output_format == "mp4":
                     st.video(out_bytes)
                 else:
