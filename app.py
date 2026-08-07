@@ -16,11 +16,10 @@ Extract motion-centered clips or animated GIFs from online videos with automatic
 *If processing fails or times out, try using a shorter clip duration or a different video site.*
 """)
 
-# User Inputs (no description input option)
+# User Inputs (No "Save File As" or description inputs)
 video_url = st.text_input("Video URL", "")
 start_time = st.text_input("Start Time (HH:MM:SS)", "00:02:34")
 clip_duration = st.text_input("Clip Duration (seconds)", "16")
-save_file_as = st.text_input("Save File As", "")
 output_format = st.selectbox("Output Format", ["mp4", "gif"])
 orientation = st.selectbox("Orientation", ["horizontal", "vertical", "square"])
 
@@ -48,12 +47,9 @@ def get_direct_stream_url(source_url):
 if st.button("Generate Clip"):
     if not video_url.strip():
         st.error("Please enter a valid Video URL.")
-    elif not save_file_as.strip():
-        st.error("Please enter a name in 'Save File As'.")
     else:
         with st.spinner("Processing clip... please wait."):
-            name = save_file_as.strip().replace('.mp4','').replace('.gif','')
-            out = f"{name}.{output_format}"
+            out = f"output.{output_format}"
             tmp = "temp.mp4"
 
             # Clean pre-existing temporary files
@@ -169,13 +165,5 @@ if st.button("Generate Clip"):
                     st.video(out)
                 else:
                     st.image(out)
-
-                with open(out, "rb") as file:
-                    st.download_button(
-                        label=f"Download {output_format.upper()}",
-                        data=file,
-                        file_name=out,
-                        mime="video/mp4" if output_format == "mp4" else "image/gif"
-                    )
             else:
                 st.error("Processing failed. Please verify the URL or try a different video site / shorter clip duration.")
