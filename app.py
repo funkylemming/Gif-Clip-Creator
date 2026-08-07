@@ -6,12 +6,18 @@ import numpy as np
 import streamlit as st
 import yt_dlp
 
-st.title("Universal Motion-Centered Video/GIF Maker")
-st.markdown("Extract motion-centered clips or animated GIFs from online videos with automatic frame cropping.")
+# Force cache clearance on every run to keep memory footprint low
+st.cache_data.clear()
 
-# User Inputs
+st.title("Universal Motion-Centered Video/GIF Maker")
+st.markdown("""
+Extract motion-centered clips or animated GIFs from online videos with automatic frame cropping. 
+
+*If processing fails or times out, try using a shorter clip duration or a different video site.*
+""")
+
+# User Inputs (no description input option)
 video_url = st.text_input("Video URL", "")
-clip_description = st.text_area("Description (Optional)", "", placeholder="Add notes or a caption for this clip...")
 start_time = st.text_input("Start Time (HH:MM:SS)", "00:02:34")
 clip_duration = st.text_input("Clip Duration (seconds)", "16")
 save_file_as = st.text_input("Save File As", "")
@@ -50,7 +56,7 @@ if st.button("Generate Clip"):
             out = f"{name}.{output_format}"
             tmp = "temp.mp4"
 
-            # Clean pre-existing files
+            # Clean pre-existing temporary files
             for f in [tmp, out, "temp_cropped.mp4"]:
                 if os.path.exists(f):
                     try: os.remove(f)
@@ -59,7 +65,6 @@ if st.button("Generate Clip"):
             stream_url = get_direct_stream_url(video_url)
             headers = f"User-Agent: {user_agent}\r\nReferer: {video_url}\r\n"
             
-            # Speed & Memory Optimized FFmpeg Command (stdout/stderr piped to DEVNULL)
             cmd1 = [
                 'ffmpeg', '-y', '-headers', headers, 
                 '-ss', start_time, '-i', stream_url, 
@@ -124,7 +129,6 @@ if st.button("Generate Clip"):
                 else:
                     cap.release()
 
-                # Force memory cleanup after video analysis
                 gc.collect()
 
                 if output_format == "mp4":
@@ -161,16 +165,11 @@ if st.button("Generate Clip"):
                 st.success("File generated successfully!")
                 
                 st.subheader("Preview")
-                if clip_description.strip():
-                    st.caption(clip_description.strip())
-
-                # Display preview safely using disk path (prevents RAM overload)
                 if output_format == "mp4":
                     st.video(out)
                 else:
                     st.image(out)
 
-                # Stream file directly into download button
                 with open(out, "rb") as file:
                     st.download_button(
                         label=f"Download {output_format.upper()}",
@@ -179,4 +178,4 @@ if st.button("Generate Clip"):
                         mime="video/mp4" if output_format == "mp4" else "image/gif"
                     )
             else:
-                st.error("Processing failed. Streamlit Cloud may have timed out or the video URL was restricted.")
+                st.error("Processing failed. Please verify the URL or try a different video site / shorter clip duration.")
