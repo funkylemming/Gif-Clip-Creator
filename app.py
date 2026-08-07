@@ -107,13 +107,11 @@ if st.button("Generate Clip"):
                 if output_format == "mp4":
                     os.rename(tmp, out)
                 else:
-                    # Determine target width and FPS based on duration to guarantee small file size in ONE pass
                     try:
                         dur = float(clip_duration)
                     except ValueError:
                         dur = 16.0
 
-                    # Adjust target dimensions and framerate dynamically to guarantee < 10MB in a single conversion pass
                     if dur > 12:
                         target_fps = 12
                         target_width = 360 if orientation == "vertical" else (420 if orientation == "square" else 480)
@@ -124,7 +122,6 @@ if st.button("Generate Clip"):
                         target_fps = 15
                         target_width = 480 if orientation == "vertical" else (540 if orientation == "square" else 640)
 
-                    # Single fast pass using standard palettegen/use chained directly
                     fast_gif_cmd = [
                         'ffmpeg', '-y', '-i', tmp,
                         '-vf', f"fps={target_fps},scale={target_width}:-1:flags=bilinear,split[s0][s1];[s0]palettegen=max_colors=192[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3",
@@ -135,14 +132,25 @@ if st.button("Generate Clip"):
                     if os.path.exists(tmp): os.remove(tmp)
 
             if os.path.exists(out) and os.path.getsize(out) > 0:
-                st.success("File generated successfully!")
                 with open(out, "rb") as file:
-                    st.download_button(
-                        label=f"Download {output_format.upper()}",
-                        data=file,
-                        file_name=out,
-                        mime="video/mp4" if output_format == "mp4" else "image/gif"
-                    )
+                    out_bytes = file.read()
+                
                 os.remove(out)
+
+                st.success("File generated successfully!")
+                
+                # Preview Player
+                st.subheader("Preview")
+                if output_format == "mp4":
+                    st.video(out_bytes)
+                else:
+                    st.image(out_bytes)
+
+                st.download_button(
+                    label=f"Download {output_format.upper()}",
+                    data=out_bytes,
+                    file_name=out,
+                    mime="video/mp4" if output_format == "mp4" else "image/gif"
+                )
             else:
                 st.error("Processing failed. Please verify the URL or timestamps.")
