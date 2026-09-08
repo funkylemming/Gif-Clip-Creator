@@ -1,6 +1,8 @@
-import static_ffmpeg
+import os
+import imageio_ffmpeg
 
-static_ffmpeg.add_paths()
+# Automatically locate the static ffmpeg binary and set it in the PATH
+os.environ["PATH"] += os.pathsep + os.path.dirname(imageio_ffmpeg.get_ffmpeg_exe())
 import os
 import gc
 import subprocess
