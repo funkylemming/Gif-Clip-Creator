@@ -1,4 +1,1 @@
-streamlit
-opencv-python-headless
-numpy
-yt-dlp
+static-ffmpeg
