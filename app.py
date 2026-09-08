@@ -7,10 +7,9 @@ import numpy as np
 import streamlit as st
 import yt_dlp
 
-# Standard system FFmpeg executable
+# Standard system FFmpeg executable installed via packages.txt
 FFMPEG_EXE = "ffmpeg"
 
-# Clear cache to minimize memory overhead
 st.cache_data.clear()
 
 st.title("Universal Motion-Centered Video/GIF Maker")
