@@ -6,25 +6,13 @@ import cv2
 import numpy as np
 import streamlit as st
 import yt_dlp
-import imageio_ffmpeg
 
-# ==============================================================================
-# FFmpeg Path Setup
-# ==============================================================================
-if shutil.which("ffmpeg"):
-    FFMPEG_EXE = "ffmpeg"
-else:
-    FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
+# Standard system FFmpeg executable
+FFMPEG_EXE = "ffmpeg"
 
-ffmpeg_dir = os.path.dirname(FFMPEG_EXE) if FFMPEG_EXE != "ffmpeg" else ""
-if ffmpeg_dir:
-    os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
-
+# Clear cache to minimize memory overhead
 st.cache_data.clear()
 
-# ==============================================================================
-# UI Setup
-# ==============================================================================
 st.title("Universal Motion-Centered Video/GIF Maker")
 st.markdown("""
 Extract motion-centered clips or animated GIFs from online videos with automatic frame cropping.
@@ -38,6 +26,24 @@ orientation = st.selectbox("Orientation", ["horizontal", "vertical", "square"])
 
 user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
 
+def get_stream_url(url):
+    """Extract direct media stream URL using yt-dlp."""
+    if url.strip().lower().endswith(('.mp4', '.m4v', '.mov', '.webm')):
+        return url.strip()
+    
+    ydl_opts = {
+        'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4][height<=720]/best',
+        'quiet': True,
+        'no_warnings': True,
+        'user_agent': user_agent,
+        'nocheckcertificate': True,
+        'extractor_args': {'youtube': {'player_client': ['android', 'web']}}
+    }
+    
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+        return info.get('url')
+
 def parse_seconds(time_str):
     """Converts HH:MM:SS or integer strings to float seconds."""
     try:
@@ -50,78 +56,6 @@ def parse_seconds(time_str):
     except ValueError:
         return 0.0
 
-def process_video_pipeline(url, start, duration, output_path):
-    """
-    Downloads ONLY the specified clip range natively via yt-dlp/python,
-    avoiding both full-video hanging and FFmpeg streaming segmentation faults.
-    """
-    clean_url = url.strip()
-    start_sec = parse_seconds(start)
-    dur_sec = parse_seconds(duration)
-    end_sec = start_sec + dur_sec
-
-    # Direct video URL handling
-    if clean_url.lower().endswith(('.mp4', '.m4v', '.mov', '.webm')):
-        cmd = [
-            FFMPEG_EXE, '-y',
-            '-threads', '1',
-            '-ss', str(start),
-            '-i', clean_url,
-            '-t', str(duration),
-            '-c:v', 'libx264',
-            '-crf', '26',
-            '-preset', 'ultrafast',
-            '-c:a', 'aac',
-            '-b:a', '96k',
-            output_path
-        ]
-        return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-    # Partial range download via yt-dlp (Downloads ONLY requested seconds)
-    section_str = f"*{start_sec}-{end_sec}"
-    
-    ydl_opts = {
-        'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4][height<=720]/best',
-        'quiet': True,
-        'no_warnings': True,
-        'user_agent': user_agent,
-        'nocheckcertificate': True,
-        'outtmpl': 'temp_section.%(ext)s',
-        'download_ranges': yt_dlp.utils.download_range_func(None, [(start_sec, end_sec)]),
-        'force_overwrites': True,
-        'extractor_args': {'youtube': {'player_client': ['android', 'web']}}
-    }
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([clean_url])
-
-    # Standardize downloaded clip to output_path
-    sec_files = [f for f in os.listdir('.') if f.startswith('temp_section.')]
-    if sec_files:
-        sec_file = sec_files[0]
-        transcode_cmd = [
-            FFMPEG_EXE, '-y',
-            '-threads', '1',
-            '-i', sec_file,
-            '-c:v', 'libx264',
-            '-crf', '26',
-            '-preset', 'ultrafast',
-            '-c:a', 'aac',
-            '-b:a', '96k',
-            output_path
-        ]
-        res = subprocess.run(transcode_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        try: 
-            os.remove(sec_file)
-        except Exception: 
-            pass
-        return res
-
-    return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="Failed to download video clip range.")
-
-# ==============================================================================
-# Main Processing Logic
-# ==============================================================================
 if st.button("Generate Clip"):
     if not video_url.strip():
         st.error("Please enter a valid Video URL.")
@@ -130,25 +64,42 @@ if st.button("Generate Clip"):
             out = f"output.{output_format}"
             tmp = "temp.mp4"
 
-            # Clean up residual files
-            for f in [tmp, out, "temp_cropped.mp4"] + [f for f in os.listdir('.') if f.startswith('temp_section.')]:
+            # Safe cleanup of prior outputs
+            for f in [tmp, out, "temp_cropped.mp4"]:
                 if os.path.exists(f):
-                    try: 
+                    try:
                         os.remove(f)
-                    except Exception: 
+                    except Exception:
                         pass
 
-            # Step 1: Range-limited download and transcode
+            # Step 1: Extract Stream & Extract Segment
             try:
-                r = process_video_pipeline(video_url, start_time, clip_duration, tmp)
+                stream_url = get_stream_url(video_url)
+                
+                ffmpeg_cmd = [
+                    FFMPEG_EXE, '-y',
+                    '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
+                    '-user_agent', user_agent,
+                    '-ss', start_time,
+                    '-i', stream_url,
+                    '-t', clip_duration,
+                    '-c:v', 'libx264',
+                    '-crf', '26',
+                    '-preset', 'ultrafast',
+                    '-c:a', 'aac',
+                    '-b:a', '96k',
+                    '-fps_mode', 'vfr',
+                    tmp
+                ]
+                
+                r = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             except Exception as ex:
                 r = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=str(ex))
 
-            # Check if output file was created successfully
             if not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
-                st.error("Step 1 Failed: Process could not extract the video segment.")
+                st.error("Step 1 Failed: Standard FFmpeg could not process the stream.")
                 st.subheader("Error Output Log")
-                st.code(r.stderr if r.stderr else "Video source could not be downloaded or processed.")
+                st.code(r.stderr if r.stderr else "Could not retrieve direct stream URL.")
             else:
                 # Step 2: Motion Detection & Dynamic Cropping
                 cap = cv2.VideoCapture(tmp)
@@ -167,10 +118,10 @@ if st.button("Generate Clip"):
 
                         while True:
                             ret, frame = cap.read()
-                            if not ret: 
+                            if not ret:
                                 break
                             frame_count += 1
-                            if frame_count % 5 != 0: 
+                            if frame_count % 5 != 0:
                                 continue
 
                             gray = cv2.cvtColor(cv2.resize(frame, (tw, th)), cv2.COLOR_BGR2GRAY)
@@ -194,31 +145,30 @@ if st.button("Generate Clip"):
                         left_bound = max(0, min(left_bound, orig_w - target_w))
                         if left_bound + target_w > orig_w:
                             target_w = orig_w - left_bound
-                        if target_w % 2 != 0: 
+                        if target_w % 2 != 0:
                             target_w -= 1
 
                         crop_tmp = "temp_cropped.mp4"
                         crop_cmd = [
                             FFMPEG_EXE, '-y',
-                            '-threads', '1',
                             '-i', tmp,
                             '-vf', f"crop={target_w}:{orig_h}:{left_bound}:0",
                             '-c:a', 'copy',
                             crop_tmp
                         ]
                         crop_res = subprocess.run(crop_cmd, capture_output=True, text=True)
-                        
+
                         if crop_res.returncode == 0 and os.path.exists(crop_tmp):
                             os.remove(tmp)
                             shutil.move(crop_tmp, tmp)
                         else:
-                            st.warning("Cropping step failed, falling back to original video dimensions.")
+                            st.warning("Cropping step failed, falling back to original dimensions.")
                 else:
                     cap.release()
 
                 gc.collect()
 
-                # Step 3: Format Rendering (MP4 vs GIF)
+                # Step 3: Output Formatting
                 if output_format == "mp4":
                     shutil.move(tmp, out)
                 else:
@@ -236,7 +186,6 @@ if st.button("Generate Clip"):
 
                     fast_gif_cmd = [
                         FFMPEG_EXE, '-y',
-                        '-threads', '1',
                         '-i', tmp,
                         '-vf', f"fps={target_fps},scale={target_width}:-1:flags=bilinear,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3",
                         out
@@ -247,12 +196,12 @@ if st.button("Generate Clip"):
                         st.error("GIF conversion failed:")
                         st.code(gif_res.stderr)
 
-                    if os.path.exists(tmp): 
+                    if os.path.exists(tmp):
                         os.remove(tmp)
 
             gc.collect()
 
-            # Step 4: Preview Output
+            # Step 4: Display Output
             if os.path.exists(out) and os.path.getsize(out) > 0:
                 st.success("Clip generated successfully!")
                 st.subheader("Preview")
