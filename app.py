@@ -9,31 +9,13 @@ import yt_dlp
 import imageio_ffmpeg
 
 # ==============================================================================
-# FFmpeg Path & Execution Setup (imageio-ffmpeg)
+# FFmpeg Path Setup (No filesystem modification to avoid Errno 1)
 # ==============================================================================
 FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
 
-# 1. Enforce executable permissions on the binary
-if os.path.exists(FFMPEG_EXE):
-    os.chmod(FFMPEG_EXE, 0o755)
-
-# 2. Inject binary directory into PATH
+# Inject the imageio-ffmpeg directory directly into system PATH
 ffmpeg_dir = os.path.dirname(FFMPEG_EXE)
 os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
-
-# 3. Create local bin directory with a direct executable alias for subprocesses
-bin_dir = os.path.abspath("./.bin")
-os.makedirs(bin_dir, exist_ok=True)
-ffmpeg_binary_target = os.path.join(bin_dir, "ffmpeg")
-
-if not os.path.exists(ffmpeg_binary_target):
-    try:
-        shutil.copy(FFMPEG_EXE, ffmpeg_binary_target)
-        os.chmod(ffmpeg_binary_target, 0o755)
-    except Exception:
-        pass
-
-os.environ["PATH"] = bin_dir + os.pathsep + os.environ["PATH"]
 
 # Clear Streamlit cache to maintain a low memory footprint
 st.cache_data.clear()
@@ -43,12 +25,9 @@ st.cache_data.clear()
 # ==============================================================================
 st.title("Universal Motion-Centered Video/GIF Maker")
 st.markdown("""
-Extract motion-centered clips or animated GIFs from online videos with automatic frame cropping. 
-
-*If processing fails, check the detailed error log generated below.*
+Extract motion-centered clips or animated GIFs from online videos with automatic frame cropping.
 """)
 
-# Minimalist Inputs
 video_url = st.text_input("Video URL", "")
 start_time = st.text_input("Start Time (HH:MM:SS)", "00:00:05")
 clip_duration = st.text_input("Clip Duration (seconds)", "5")
@@ -58,10 +37,6 @@ orientation = st.selectbox("Orientation", ["horizontal", "vertical", "square"])
 user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
 
 def get_direct_stream_url(source_url):
-    """
-    Attempts to resolve a direct video stream via yt-dlp.
-    If the source URL is already a direct video file (.mp4), it returns it directly.
-    """
     if source_url.strip().lower().endswith(('.mp4', '.m4v', '.mov', '.webm')):
         return source_url.strip()
 
@@ -96,7 +71,7 @@ if st.button("Generate Clip"):
             out = f"output.{output_format}"
             tmp = "temp.mp4"
 
-            # Cleanup previous artifacts
+            # Cleanup previous artifacts safely
             for f in [tmp, out, "temp_cropped.mp4"]:
                 if os.path.exists(f):
                     try: 
@@ -126,7 +101,6 @@ if st.button("Generate Clip"):
             
             r = subprocess.run(cmd1, capture_output=True, text=True)
 
-            # Verification of initial download
             if r.returncode != 0 or not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
                 st.error("Step 1 Failed: FFmpeg could not process the video stream.")
                 st.subheader("FFmpeg Output Log")
@@ -191,7 +165,7 @@ if st.button("Generate Clip"):
                         
                         if crop_res.returncode == 0 and os.path.exists(crop_tmp):
                             os.remove(tmp)
-                            os.rename(crop_tmp, tmp)
+                            shutil.move(crop_tmp, tmp)
                         else:
                             st.warning("Cropping step failed, falling back to original video dimensions.")
                 else:
@@ -201,7 +175,7 @@ if st.button("Generate Clip"):
 
                 # Step 3: Format Rendering (MP4 vs GIF)
                 if output_format == "mp4":
-                    os.rename(tmp, out)
+                    shutil.move(tmp, out)
                 else:
                     try:
                         dur = float(clip_duration)
