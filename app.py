@@ -37,33 +37,79 @@ orientation = st.selectbox("Orientation", ["horizontal", "vertical", "square"])
 
 user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
 
-def get_direct_stream_url(source_url):
+def extract_and_download_segment(url, start, duration, output_path):
     """
-    Attempts to resolve a direct video stream via yt-dlp.
-    If the source URL is already a direct video file (.mp4), it returns it directly.
+    Downloads the requested video segment using yt-dlp directly with FFmpeg backend.
+    This avoids passing unstable raw CDN stream URLs to FFmpeg directly.
     """
-    if source_url.strip().lower().endswith(('.mp4', '.m4v', '.mov', '.webm')):
-        return source_url.strip()
+    if url.strip().lower().endswith(('.mp4', '.m4v', '.mov', '.webm')):
+        # Direct URL download via FFmpeg
+        cmd = [
+            FFMPEG_EXE, '-y',
+            '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
+            '-user_agent', user_agent,
+            '-ss', start,
+            '-i', url.strip(),
+            '-t', duration,
+            '-c:v', 'libx264',
+            '-crf', '26',
+            '-preset', 'ultrafast',
+            '-c:a', 'aac',
+            '-b:a', '96k',
+            '-fps_mode', 'vfr',
+            output_path
+        ]
+        return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
+    # For YouTube and web platforms, use yt-dlp to handle download + trim natively
     ydl_opts = {
         'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4][height<=720]/best',
         'quiet': True,
         'no_warnings': True,
         'user_agent': user_agent,
         'nocheckcertificate': True,
-        'ffmpeg_location': ffmpeg_dir,
+        'ffmpeg_location': FFMPEG_EXE,
+        'outtmpl': 'temp_raw.%(ext)s',
+        'download_ranges': yt_dlp.utils.download_range_func(None, [(parse_seconds(start), parse_seconds(start) + parse_seconds(duration))]),
+        'force_overwrites': True,
         'extractor_args': {'youtube': {'player_client': ['android', 'web']}}
     }
+    
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl.download([url])
+
+    # Convert/normalize temp_raw file to temp.mp4
+    raw_files = [f for f in os.listdir('.') if f.startswith('temp_raw.')]
+    if raw_files:
+        raw_file = raw_files[0]
+        transcode_cmd = [
+            FFMPEG_EXE, '-y',
+            '-i', raw_file,
+            '-c:v', 'libx264',
+            '-crf', '26',
+            '-preset', 'ultrafast',
+            '-c:a', 'aac',
+            '-fps_mode', 'vfr',
+            output_path
+        ]
+        res = subprocess.run(transcode_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try: os.remove(raw_file)
+        except Exception: pass
+        return res
+    
+    return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="yt-dlp could not fetch video segment.")
+
+def parse_seconds(time_str):
+    """Converts HH:MM:SS or integer strings to float seconds."""
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(source_url, download=False)
-            if 'url' in info:
-                return info['url']
-            elif 'requested_formats' in info and len(info['requested_formats']) > 0:
-                return info['requested_formats'][0]['url']
-    except Exception as e:
-        st.warning(f"yt-dlp stream extraction note: {e}")
-    return source_url
+        parts = time_str.split(':')
+        if len(parts) == 3:
+            return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+        elif len(parts) == 2:
+            return float(parts[0]) * 60 + float(parts[1])
+        return float(time_str)
+    except ValueError:
+        return 0.0
 
 # ==============================================================================
 # Main Processing Logic
@@ -77,45 +123,24 @@ if st.button("Generate Clip"):
             tmp = "temp.mp4"
 
             # Cleanup previous artifacts safely
-            for f in [tmp, out, "temp_cropped.mp4"]:
+            for f in [tmp, out, "temp_cropped.mp4"] + [f for f in os.listdir('.') if f.startswith('temp_raw.')]:
                 if os.path.exists(f):
                     try: 
                         os.remove(f)
                     except Exception: 
                         pass
 
-            stream_url = get_direct_stream_url(video_url)
-            
-            # Step 1: Download & Transcode using FFmpeg
-            cmd1 = [
-                FFMPEG_EXE, '-y',
-                '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
-                '-user_agent', user_agent,
-                '-headers', f"Referer: {video_url}\r\n",
-                '-ss', start_time,
-                '-i', stream_url,
-                '-t', clip_duration,
-                '-c:v', 'libx264',
-                '-crf', '26',
-                '-preset', 'ultrafast',
-                '-c:a', 'aac',
-                '-b:a', '96k',
-                '-fps_mode', 'vfr',
-                tmp
-            ]
-            
-            r = subprocess.run(cmd1, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            # Step 1: Download & Transcode using robust yt-dlp/FFmpeg pipeline
+            try:
+                r = extract_and_download_segment(video_url, start_time, clip_duration, tmp)
+            except Exception as ex:
+                r = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=str(ex))
 
             # Check if output file was created successfully
             if not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
-                st.error("Step 1 Failed: FFmpeg could not process the video stream.")
-                st.subheader("FFmpeg Detailed Error Log (Tail)")
-                
-                # Extract and display the last 30 lines of FFmpeg's log
-                stderr_lines = r.stderr.splitlines() if r.stderr else []
-                log_tail = "\n".join(stderr_lines[-30:]) if stderr_lines else "No stderr output captured."
-                
-                st.code(log_tail)
+                st.error("Step 1 Failed: Could not process or download video stream.")
+                st.subheader("Error Output Log")
+                st.code(r.stderr if r.stderr else "No error log generated. The video URL may be restricted or blocked.")
             else:
                 # Step 2: Motion Detection & Dynamic Cropping
                 cap = cv2.VideoCapture(tmp)
@@ -189,8 +214,8 @@ if st.button("Generate Clip"):
                     shutil.move(tmp, out)
                 else:
                     try:
-                        dur = float(clip_duration)
-                    except ValueError:
+                        dur = parse_seconds(clip_duration)
+                    except Exception:
                         dur = 5.0
 
                     if dur > 12:
