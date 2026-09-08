@@ -85,13 +85,13 @@ if st.button("Generate Clip"):
                         pass
 
             stream_url = get_direct_stream_url(video_url)
-            headers = f"User-Agent: {user_agent}\r\nReferer: {video_url}\r\n"
             
-            # Step 1: Download & Transcode using FFmpeg (-fps_mode replaces deprecated -vsync)
+            # Step 1: Download & Transcode using FFmpeg
             cmd1 = [
                 FFMPEG_EXE, '-y',
-                '-protocol_whitelist', 'file,http,https,tcp,tls',
-                '-headers', headers,
+                '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
+                '-user_agent', user_agent,
+                '-headers', f"Referer: {video_url}\r\n",
                 '-ss', start_time,
                 '-i', stream_url,
                 '-t', clip_duration,
@@ -104,13 +104,18 @@ if st.button("Generate Clip"):
                 tmp
             ]
             
-            r = subprocess.run(cmd1, capture_output=True, text=True)
+            r = subprocess.run(cmd1, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-            # Check if the output file actually failed to create
+            # Check if output file was created successfully
             if not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
                 st.error("Step 1 Failed: FFmpeg could not process the video stream.")
-                st.subheader("FFmpeg Output Log")
-                st.code(r.stderr if r.stderr else r.stdout)
+                st.subheader("FFmpeg Detailed Error Log (Tail)")
+                
+                # Extract and display the last 30 lines of FFmpeg's log
+                stderr_lines = r.stderr.splitlines() if r.stderr else []
+                log_tail = "\n".join(stderr_lines[-30:]) if stderr_lines else "No stderr output captured."
+                
+                st.code(log_tail)
             else:
                 # Step 2: Motion Detection & Dynamic Cropping
                 cap = cv2.VideoCapture(tmp)
