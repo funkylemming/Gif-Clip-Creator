@@ -1,19 +1,41 @@
 import os
-import imageio_ffmpeg
-
-# Automatically locate the static ffmpeg binary and set it in the PATH
-os.environ["PATH"] += os.pathsep + os.path.dirname(imageio_ffmpeg.get_ffmpeg_exe())
-import os
 import gc
+import shutil
 import subprocess
 import cv2
 import numpy as np
 import streamlit as st
 import yt_dlp
+import imageio_ffmpeg
 
-# Force cache clearance on every run to keep memory footprint low
+# ==============================================================================
+# FFmpeg Path & Binary Configuration (imageio-ffmpeg Integration)
+# ==============================================================================
+FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
+
+# 1. Inject imageio-ffmpeg directory into system PATH
+ffmpeg_dir = os.path.dirname(FFMPEG_EXE)
+os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
+
+# 2. Ensure a local 'ffmpeg' executable alias exists in writeable workspace
+bin_dir = os.path.abspath("./.bin")
+os.makedirs(bin_dir, exist_ok=True)
+ffmpeg_symlink = os.path.join(bin_dir, "ffmpeg")
+
+if not os.path.exists(ffmpeg_symlink):
+    try:
+        os.symlink(FFMPEG_EXE, ffmpeg_symlink)
+    except Exception:
+        shutil.copy(FFMPEG_EXE, ffmpeg_symlink)
+
+os.environ["PATH"] = bin_dir + os.pathsep + os.environ["PATH"]
+
+# Clear Streamlit cache on execution to maintain a low memory footprint
 st.cache_data.clear()
 
+# ==============================================================================
+# UI Setup
+# ==============================================================================
 st.title("Universal Motion-Centered Video/GIF Maker")
 st.markdown("""
 Extract motion-centered clips or animated GIFs from online videos with automatic frame cropping. 
@@ -21,7 +43,7 @@ Extract motion-centered clips or animated GIFs from online videos with automatic
 *If processing fails or times out, try using a shorter clip duration or a different video site.*
 """)
 
-# User Inputs (No "Save File As" or description inputs)
+# Minimalist Inputs (No user-provided filenames, download buttons, or descriptions)
 video_url = st.text_input("Video URL", "")
 start_time = st.text_input("Start Time (HH:MM:SS)", "00:02:34")
 clip_duration = st.text_input("Clip Duration (seconds)", "16")
@@ -36,7 +58,8 @@ def get_direct_stream_url(source_url):
         'quiet': True,
         'no_warnings': True,
         'user_agent': user_agent,
-        'nocheckcertificate': True
+        'nocheckcertificate': True,
+        'ffmpeg_location': FFMPEG_EXE
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -49,6 +72,9 @@ def get_direct_stream_url(source_url):
         pass
     return source_url
 
+# ==============================================================================
+# Main Generation Logic
+# ==============================================================================
 if st.button("Generate Clip"):
     if not video_url.strip():
         st.error("Please enter a valid Video URL.")
@@ -57,7 +83,7 @@ if st.button("Generate Clip"):
             out = f"output.{output_format}"
             tmp = "temp.mp4"
 
-            # Clean pre-existing temporary files
+            # Cleanup previous artifacts
             for f in [tmp, out, "temp_cropped.mp4"]:
                 if os.path.exists(f):
                     try: os.remove(f)
@@ -66,8 +92,9 @@ if st.button("Generate Clip"):
             stream_url = get_direct_stream_url(video_url)
             headers = f"User-Agent: {user_agent}\r\nReferer: {video_url}\r\n"
             
+            # Truncate & Transcode step using explicit FFMPEG_EXE
             cmd1 = [
-                'ffmpeg', '-y', '-headers', headers, 
+                FFMPEG_EXE, '-y', '-headers', headers, 
                 '-ss', start_time, '-i', stream_url, 
                 '-t', clip_duration, '-c:v', 'libx264', 
                 '-crf', '26', '-preset', 'ultrafast', 
@@ -81,6 +108,7 @@ if st.button("Generate Clip"):
                 orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                 orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
+                # Motion detection & dynamic horizontal crop
                 if orientation != "horizontal" and orig_h > 0:
                     scale = 240.0 / orig_h if orig_h > 240 else 1.0
                     tw, th = int(orig_w * scale), int(orig_h * scale)
@@ -122,7 +150,7 @@ if st.button("Generate Clip"):
 
                         crop_tmp = "temp_cropped.mp4"
                         subprocess.run(
-                            ['ffmpeg', '-y', '-i', tmp, '-vf', f"crop={target_w}:{orig_h}:{left_bound}:0", '-c:a', 'copy', crop_tmp], 
+                            [FFMPEG_EXE, '-y', '-i', tmp, '-vf', f"crop={target_w}:{orig_h}:{left_bound}:0", '-c:a', 'copy', crop_tmp], 
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
                         )
                         os.remove(tmp)
@@ -132,6 +160,7 @@ if st.button("Generate Clip"):
 
                 gc.collect()
 
+                # Final rendering output
                 if output_format == "mp4":
                     os.rename(tmp, out)
                 else:
@@ -151,7 +180,7 @@ if st.button("Generate Clip"):
                         target_width = 400 if orientation == "vertical" else 480
 
                     fast_gif_cmd = [
-                        'ffmpeg', '-y', '-i', tmp,
+                        FFMPEG_EXE, '-y', '-i', tmp,
                         '-vf', f"fps={target_fps},scale={target_width}:-1:flags=bilinear,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3",
                         out
                     ]
@@ -162,9 +191,9 @@ if st.button("Generate Clip"):
 
             gc.collect()
 
+            # Inline Preview Display
             if os.path.exists(out) and os.path.getsize(out) > 0:
                 st.success("File generated successfully!")
-                
                 st.subheader("Preview")
                 if output_format == "mp4":
                     st.video(out)
