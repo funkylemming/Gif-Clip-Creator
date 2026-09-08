@@ -9,7 +9,7 @@ import yt_dlp
 import imageio_ffmpeg
 
 # ==============================================================================
-# FFmpeg Path Setup (No filesystem modification to avoid Errno 1)
+# FFmpeg Path Setup (imageio-ffmpeg Integration)
 # ==============================================================================
 FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
 
@@ -28,6 +28,7 @@ st.markdown("""
 Extract motion-centered clips or animated GIFs from online videos with automatic frame cropping.
 """)
 
+# Minimalist Inputs
 video_url = st.text_input("Video URL", "")
 start_time = st.text_input("Start Time (HH:MM:SS)", "00:00:05")
 clip_duration = st.text_input("Clip Duration (seconds)", "5")
@@ -37,6 +38,10 @@ orientation = st.selectbox("Orientation", ["horizontal", "vertical", "square"])
 user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
 
 def get_direct_stream_url(source_url):
+    """
+    Attempts to resolve a direct video stream via yt-dlp.
+    If the source URL is already a direct video file (.mp4), it returns it directly.
+    """
     if source_url.strip().lower().endswith(('.mp4', '.m4v', '.mov', '.webm')):
         return source_url.strip()
 
@@ -82,7 +87,7 @@ if st.button("Generate Clip"):
             stream_url = get_direct_stream_url(video_url)
             headers = f"User-Agent: {user_agent}\r\nReferer: {video_url}\r\n"
             
-            # Step 1: Download & Transcode using FFmpeg
+            # Step 1: Download & Transcode using FFmpeg (-fps_mode replaces deprecated -vsync)
             cmd1 = [
                 FFMPEG_EXE, '-y',
                 '-protocol_whitelist', 'file,http,https,tcp,tls',
@@ -95,13 +100,14 @@ if st.button("Generate Clip"):
                 '-preset', 'ultrafast',
                 '-c:a', 'aac',
                 '-b:a', '96k',
-                '-vsync', 'vfr',
+                '-fps_mode', 'vfr',
                 tmp
             ]
             
             r = subprocess.run(cmd1, capture_output=True, text=True)
 
-            if r.returncode != 0 or not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
+            # Check if the output file actually failed to create
+            if not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
                 st.error("Step 1 Failed: FFmpeg could not process the video stream.")
                 st.subheader("FFmpeg Output Log")
                 st.code(r.stderr if r.stderr else r.stdout)
