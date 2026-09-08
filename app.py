@@ -11,7 +11,6 @@ import imageio_ffmpeg
 # ==============================================================================
 # FFmpeg Path Setup
 # ==============================================================================
-# Prefer system ffmpeg if present; fallback to imageio-ffmpeg binary
 if shutil.which("ffmpeg"):
     FFMPEG_EXE = "ffmpeg"
 else:
@@ -53,65 +52,72 @@ def parse_seconds(time_str):
 
 def process_video_pipeline(url, start, duration, output_path):
     """
-    Two-stage robust pipeline:
-    Stage 1: Native python HTTP/yt-dlp download to local file (No FFmpeg streaming)
-    Stage 2: Standard local FFmpeg clip trim
+    Downloads ONLY the specified clip range natively via yt-dlp/python,
+    avoiding both full-video hanging and FFmpeg streaming segmentation faults.
     """
     clean_url = url.strip()
-    raw_download_path = "raw_source.mp4"
-    
-    if os.path.exists(raw_download_path):
-        try: os.remove(raw_download_path)
-        except Exception: pass
+    start_sec = parse_seconds(start)
+    dur_sec = parse_seconds(duration)
+    end_sec = start_sec + dur_sec
 
-    # Phase 1: Download raw source safely
+    # Direct video URL handling
     if clean_url.lower().endswith(('.mp4', '.m4v', '.mov', '.webm')):
-        # Direct file download via python
-        import urllib.request
-        req = urllib.request.Request(clean_url, headers={'User-Agent': user_agent})
-        with urllib.request.urlopen(req) as response, open(raw_download_path, 'wb') as out_file:
-            shutil.copyfileobj(response, out_file)
-    else:
-        # Web URL download via yt-dlp native HTTP downloader
-        ydl_opts = {
-            'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4][height<=720]/best',
-            'quiet': True,
-            'no_warnings': True,
-            'user_agent': user_agent,
-            'nocheckcertificate': True,
-            'outtmpl': raw_download_path,
-            'force_overwrites': True,
-            'hls_prefer_native': True,
-            'extractor_args': {'youtube': {'player_client': ['android', 'web']}}
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([clean_url])
+        cmd = [
+            FFMPEG_EXE, '-y',
+            '-threads', '1',
+            '-ss', str(start),
+            '-i', clean_url,
+            '-t', str(duration),
+            '-c:v', 'libx264',
+            '-crf', '26',
+            '-preset', 'ultrafast',
+            '-c:a', 'aac',
+            '-b:a', '96k',
+            output_path
+        ]
+        return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-    if not os.path.exists(raw_download_path) or os.path.getsize(raw_download_path) == 0:
-        return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="Failed to download video file from host.")
-
-    # Phase 2: Local FFmpeg trim & transcode (100% safe from HTTP network crashes)
-    trim_cmd = [
-        FFMPEG_EXE, '-y',
-        '-threads', '1',
-        '-ss', str(start),
-        '-i', raw_download_path,
-        '-t', str(duration),
-        '-c:v', 'libx264',
-        '-crf', '26',
-        '-preset', 'ultrafast',
-        '-c:a', 'aac',
-        '-b:a', '96k',
-        output_path
-    ]
+    # Partial range download via yt-dlp (Downloads ONLY requested seconds)
+    section_str = f"*{start_sec}-{end_sec}"
     
-    res = subprocess.run(trim_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    
-    # Cleanup raw download file to save space
-    try: os.remove(raw_download_path)
-    except Exception: pass
+    ydl_opts = {
+        'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4][height<=720]/best',
+        'quiet': True,
+        'no_warnings': True,
+        'user_agent': user_agent,
+        'nocheckcertificate': True,
+        'outtmpl': 'temp_section.%(ext)s',
+        'download_ranges': yt_dlp.utils.download_range_func(None, [(start_sec, end_sec)]),
+        'force_overwrites': True,
+        'extractor_args': {'youtube': {'player_client': ['android', 'web']}}
+    }
 
-    return res
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl.download([clean_url])
+
+    # Standardize downloaded clip to output_path
+    sec_files = [f for f in os.listdir('.') if f.startswith('temp_section.')]
+    if sec_files:
+        sec_file = sec_files[0]
+        transcode_cmd = [
+            FFMPEG_EXE, '-y',
+            '-threads', '1',
+            '-i', sec_file,
+            '-c:v', 'libx264',
+            '-crf', '26',
+            '-preset', 'ultrafast',
+            '-c:a', 'aac',
+            '-b:a', '96k',
+            output_path
+        ]
+        res = subprocess.run(transcode_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try: 
+            os.remove(sec_file)
+        except Exception: 
+            pass
+        return res
+
+    return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="Failed to download video clip range.")
 
 # ==============================================================================
 # Main Processing Logic
@@ -124,15 +130,15 @@ if st.button("Generate Clip"):
             out = f"output.{output_format}"
             tmp = "temp.mp4"
 
-            # Cleanup previous artifacts safely
-            for f in [tmp, out, "temp_cropped.mp4", "raw_source.mp4"]:
+            # Clean up residual files
+            for f in [tmp, out, "temp_cropped.mp4"] + [f for f in os.listdir('.') if f.startswith('temp_section.')]:
                 if os.path.exists(f):
                     try: 
                         os.remove(f)
                     except Exception: 
                         pass
 
-            # Step 1: Download & Transcode via decoupled pipeline
+            # Step 1: Range-limited download and transcode
             try:
                 r = process_video_pipeline(video_url, start_time, clip_duration, tmp)
             except Exception as ex:
@@ -140,7 +146,7 @@ if st.button("Generate Clip"):
 
             # Check if output file was created successfully
             if not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
-                st.error("Step 1 Failed: Process could not complete.")
+                st.error("Step 1 Failed: Process could not extract the video segment.")
                 st.subheader("Error Output Log")
                 st.code(r.stderr if r.stderr else "Video source could not be downloaded or processed.")
             else:
