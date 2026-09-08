@@ -9,15 +9,19 @@ import yt_dlp
 import imageio_ffmpeg
 
 # ==============================================================================
-# FFmpeg Path Setup (imageio-ffmpeg Integration)
+# FFmpeg Path Setup
 # ==============================================================================
-FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
+# Use system ffmpeg if available, otherwise fallback to imageio-ffmpeg binary
+if shutil.which("ffmpeg"):
+    FFMPEG_EXE = "ffmpeg"
+else:
+    FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
 
-# Inject the imageio-ffmpeg directory directly into system PATH
-ffmpeg_dir = os.path.dirname(FFMPEG_EXE)
-os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
+ffmpeg_dir = os.path.dirname(FFMPEG_EXE) if FFMPEG_EXE != "ffmpeg" else ""
+if ffmpeg_dir:
+    os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
 
-# Clear Streamlit cache to maintain a low memory footprint
+# Clear Streamlit cache to keep memory usage minimal
 st.cache_data.clear()
 
 # ==============================================================================
@@ -37,72 +41,10 @@ orientation = st.selectbox("Orientation", ["horizontal", "vertical", "square"])
 
 user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
 
-def extract_and_download_segment(url, start, duration, output_path):
-    """
-    Downloads the requested video segment using yt-dlp directly with FFmpeg backend.
-    This avoids passing unstable raw CDN stream URLs to FFmpeg directly.
-    """
-    if url.strip().lower().endswith(('.mp4', '.m4v', '.mov', '.webm')):
-        # Direct URL download via FFmpeg
-        cmd = [
-            FFMPEG_EXE, '-y',
-            '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
-            '-user_agent', user_agent,
-            '-ss', start,
-            '-i', url.strip(),
-            '-t', duration,
-            '-c:v', 'libx264',
-            '-crf', '26',
-            '-preset', 'ultrafast',
-            '-c:a', 'aac',
-            '-b:a', '96k',
-            '-fps_mode', 'vfr',
-            output_path
-        ]
-        return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-    # For YouTube and web platforms, use yt-dlp to handle download + trim natively
-    ydl_opts = {
-        'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4][height<=720]/best',
-        'quiet': True,
-        'no_warnings': True,
-        'user_agent': user_agent,
-        'nocheckcertificate': True,
-        'ffmpeg_location': FFMPEG_EXE,
-        'outtmpl': 'temp_raw.%(ext)s',
-        'download_ranges': yt_dlp.utils.download_range_func(None, [(parse_seconds(start), parse_seconds(start) + parse_seconds(duration))]),
-        'force_overwrites': True,
-        'extractor_args': {'youtube': {'player_client': ['android', 'web']}}
-    }
-    
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
-
-    # Convert/normalize temp_raw file to temp.mp4
-    raw_files = [f for f in os.listdir('.') if f.startswith('temp_raw.')]
-    if raw_files:
-        raw_file = raw_files[0]
-        transcode_cmd = [
-            FFMPEG_EXE, '-y',
-            '-i', raw_file,
-            '-c:v', 'libx264',
-            '-crf', '26',
-            '-preset', 'ultrafast',
-            '-c:a', 'aac',
-            '-fps_mode', 'vfr',
-            output_path
-        ]
-        res = subprocess.run(transcode_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        try: os.remove(raw_file)
-        except Exception: pass
-        return res
-    
-    return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="yt-dlp could not fetch video segment.")
-
 def parse_seconds(time_str):
     """Converts HH:MM:SS or integer strings to float seconds."""
     try:
-        parts = time_str.split(':')
+        parts = str(time_str).split(':')
         if len(parts) == 3:
             return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
         elif len(parts) == 2:
@@ -110,6 +52,74 @@ def parse_seconds(time_str):
         return float(time_str)
     except ValueError:
         return 0.0
+
+def extract_and_download_segment(url, start, duration, output_path):
+    """
+    Downloads and clips the video with low-memory single-thread flags
+    to prevent segmentation faults (exit code -11).
+    """
+    clean_url = url.strip()
+    
+    # Direct MP4 link stream fetch
+    if clean_url.lower().endswith(('.mp4', '.m4v', '.mov', '.webm')):
+        cmd = [
+            FFMPEG_EXE, '-y',
+            '-threads', '1',
+            '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
+            '-user_agent', user_agent,
+            '-ss', str(start),
+            '-i', clean_url,
+            '-t', str(duration),
+            '-c:v', 'libx264',
+            '-crf', '28',
+            '-preset', 'ultrafast',
+            '-c:a', 'aac',
+            '-b:a', '96k',
+            output_path
+        ]
+        return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    # Web URL stream fetch via yt-dlp
+    ydl_opts = {
+        'format': 'best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best',
+        'quiet': True,
+        'no_warnings': True,
+        'user_agent': user_agent,
+        'nocheckcertificate': True,
+        'outtmpl': 'temp_raw.%(ext)s',
+        'download_ranges': yt_dlp.utils.download_range_func(
+            None, [(parse_seconds(start), parse_seconds(start) + parse_seconds(duration))]
+        ),
+        'force_overwrites': True,
+        'extractor_args': {'youtube': {'player_client': ['android', 'web']}}
+    }
+    
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl.download([clean_url])
+
+    # Standardize downloaded segment
+    raw_files = [f for f in os.listdir('.') if f.startswith('temp_raw.')]
+    if raw_files:
+        raw_file = raw_files[0]
+        transcode_cmd = [
+            FFMPEG_EXE, '-y',
+            '-threads', '1',
+            '-i', raw_file,
+            '-c:v', 'libx264',
+            '-crf', '28',
+            '-preset', 'ultrafast',
+            '-c:a', 'aac',
+            '-b:a', '96k',
+            output_path
+        ]
+        res = subprocess.run(transcode_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try: 
+            os.remove(raw_file)
+        except Exception: 
+            pass
+        return res
+    
+    return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="yt-dlp failed to download segment.")
 
 # ==============================================================================
 # Main Processing Logic
@@ -130,7 +140,7 @@ if st.button("Generate Clip"):
                     except Exception: 
                         pass
 
-            # Step 1: Download & Transcode using robust yt-dlp/FFmpeg pipeline
+            # Step 1: Download & Transcode using single-thread safety options
             try:
                 r = extract_and_download_segment(video_url, start_time, clip_duration, tmp)
             except Exception as ex:
@@ -138,9 +148,9 @@ if st.button("Generate Clip"):
 
             # Check if output file was created successfully
             if not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
-                st.error("Step 1 Failed: Could not process or download video stream.")
+                st.error("Step 1 Failed: FFmpeg/yt-dlp process encountered an error.")
                 st.subheader("Error Output Log")
-                st.code(r.stderr if r.stderr else "No error log generated. The video URL may be restricted or blocked.")
+                st.code(r.stderr if r.stderr else "Segmentation fault or memory crash occurred. Try using a shorter duration.")
             else:
                 # Step 2: Motion Detection & Dynamic Cropping
                 cap = cv2.VideoCapture(tmp)
@@ -192,6 +202,7 @@ if st.button("Generate Clip"):
                         crop_tmp = "temp_cropped.mp4"
                         crop_cmd = [
                             FFMPEG_EXE, '-y',
+                            '-threads', '1',
                             '-i', tmp,
                             '-vf', f"crop={target_w}:{orig_h}:{left_bound}:0",
                             '-c:a', 'copy',
@@ -227,6 +238,7 @@ if st.button("Generate Clip"):
 
                     fast_gif_cmd = [
                         FFMPEG_EXE, '-y',
+                        '-threads', '1',
                         '-i', tmp,
                         '-vf', f"fps={target_fps},scale={target_width}:-1:flags=bilinear,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3",
                         out
